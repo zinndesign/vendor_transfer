@@ -23,6 +23,7 @@ if(!file_exists($outpath)) {
 }
 
 $log = $outpath . 'results.log';
+unlink($log);
 write2log($log, "Input file: " . basename($input_file));
 
 if( !file_exists($input_file) ) { // does it exist?
@@ -37,7 +38,7 @@ $code = array_pop($split);
 // determine all the files in the directory that match the transfer filetypes
 // should pull this from filetypes table, hard-coded for now
 $files_in_dir = glob($homedir.'/*.{pdf,xls,xlsx,zip}', GLOB_BRACE);
-write2log($log, print_r($files_in_dir,true));
+write2log($log, "Files matching pdf, xls, xlsx, zip:\n" . print_r($files_in_dir,true));
 
 // if the new file is NOT a PDF, let's make sure that one is already available
 // (in the event a missing file was added after the fact)
@@ -130,15 +131,36 @@ foreach($transfers as $key => $obj) {
     $query = "SELECT URL, username, passwd, dir, portnum, protocol FROM ftp WHERE ftpID = " . $transfer->ftpID;
     $result = dbQuery($db, $query);
     foreach($result as $ftp) {
-      print_r($ftp);
+      //print_r($ftp);
       if($ftp['protocol'] == 'FTP') {
-         echo "\n\nFTP, move along\n\n";
-         //$result = FTPtransfer($ftp['URL'], $ftp['username'], $ftp['passwd'], $ftp['dir'], $ftp['portnum'], $transfer->files);
-         //$transfers[$key]->status = ($result === true ? 'complete' : 'failed');
+         $result = FTPtransfer($ftp['URL'], $ftp['username'], $ftp['passwd'], $ftp['dir'], $ftp['portnum'], $transfer->files);
+         $transfers[$key]->status = ($result === true ? 'succeeded' : 'failed');
       } else {
-         SFTPtransferBatch($ftp['URL'], $ftp['username'], $ftp['passwd'], $ftp['dir'], $ftp['portnum'], $transfer->files);
+         $result = SFTPtransfer($ftp['URL'], $ftp['username'], $ftp['passwd'], $ftp['dir'], $ftp['portnum'], $transfer->files);
+         $transfers[$key]->status = ($result === true ? 'succeeded' : 'failed');
       }
     }
+}
+
+$failcount = 0;
+
+// summary of the operation, plus count of fails
+foreach($transfers as $key => $obj) {
+   $transfer = $obj;
+   $str = "Transfer of " . count($transfer->files) . " files to $key " . $transfer->status;
+   write2log($log, $str);
+   if( $transfer->status == 'failed') {
+      $failcount++;
+   }
+}
+
+// if all transfers succeeded, we can move files to processed directory
+if($failcount == 0) {
+   foreach($transfer_files as $file) {
+      $newfile = $outpath . basename($file);
+      $command = "mv -f $file $newfile";
+      `$command`;
+   }
 }
 
 /***** USER-DEFINED OBJECTS & FUNCTIONS *****/
@@ -161,9 +183,11 @@ class Transfer {
 }
 
 function FTPtransfer($url, $user, $pw, $dir, $port, $files) {
+    global $log;
+    
     $conn_id = ftp_connect($url, $port, 30);
     if(!$conn_id) {
-      write2log($log, "Couldn't connect to $url");
+      write2log($log, "FTP connection has failed, please verify $url");
       return false;
     }
     
@@ -171,10 +195,10 @@ function FTPtransfer($url, $user, $pw, $dir, $port, $files) {
     
     // check connection
     if (!$login_result) {
-      echo "FTP connection has failed, check credentials for $url\n";
+      write2log($log, "FTP login has failed, check credentials for $url");
       $result = false;
     } else {
-      echo "Connected to $url\n";
+      write2log($log, "Connected to $url");
     }
     
     // if the directory is not null, switch to it
@@ -191,16 +215,14 @@ function FTPtransfer($url, $user, $pw, $dir, $port, $files) {
    foreach($files as $file) {
       $remote_file = basename($file);
       write2log($log, "Attempting to transfer $file");
-      // temp
-      write2log($log, "Successfully uploaded $file");
-      $result = true;
-      //if (ftp_put($conn_id, $remote_file, $file, FTP_BINARY)) {
-      //   write2log($log, "Successfully uploaded $file");
-      //   $result = true;
-      //} else {
-      //   write2log($log, "There was a problem while uploading $file");
-      //   $result = false;
-      //}
+      
+      if (ftp_put($conn_id, $remote_file, $file, FTP_BINARY)) {
+         write2log($log, "Successfully uploaded $file");
+         $result = true;
+      } else {
+         write2log($log, "There was a problem while uploading $file");
+         $result = false;
+      }
    }
     
    // close the connection
@@ -208,7 +230,7 @@ function FTPtransfer($url, $user, $pw, $dir, $port, $files) {
    return $result;
 }
 
-function SFTPtransferBatch($url, $user, $pw, $dir, $port, $files) {
+function SFTPtransfer($url, $user, $pw, $dir, $port, $files) {
    global $log;
    
    // create a temp file to write the batch SFTP commands
@@ -232,15 +254,17 @@ function SFTPtransferBatch($url, $user, $pw, $dir, $port, $files) {
    fclose($handle);
    
    $command = "sshpass -p \"$pw\" sftp -oBatchMode=no " . ($port==22?'':"-P $port ") . "-b $tmpfname $user@$url";
-   echo $command;
+   write2log($log, "SFTP command: " . $command);
    
-   $result = `$command`;
+   exec($command .' 2>&1', $result, $return_value);
    
    unlink($tmpfname);
    
+   $str_result = implode("\n", $result);
+   
    // see if return from command indicates failure
-   if(stripos($result, 'timed out')>-1 || stripos($result, 'not found')>-1 || stripos($result, 'refused')>-1) {
-      write2log($log, "The transfer to $url failed. Error returned:\n$result");
+   if(stripos($str_result, 'timed out')>-1 || stripos($str_result, 'not found')>-1 || stripos($str_result, 'refused')>-1 || $return_value == 255) {
+      write2log($log, "The transfer to $url failed. Error returned:\n$str_result");
       return false;
    } else {
       write2log($log, count($files) . " files uploaded via SFTP to $url");
