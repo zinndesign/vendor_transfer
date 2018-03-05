@@ -9,7 +9,8 @@ array_shift($argv);
 $input_file = trim( $argv[0] );
 $input_file = str_replace('\\','', $input_file);
 
-$homedir = getcwd();
+//$homedir = getcwd();
+$homedir = dirname($input_file);
 
 // What brand? Grab code from current directory name
 $split = explode('/', $homedir);
@@ -249,16 +250,26 @@ function SFTPtransfer($url, $user, $pw, $dir, $port, $files) {
       $batchtext .= "put $file\n";
    }
    
+   $batchtext .= "exit\n";
+   
    $handle = fopen($tmpfname, "w");
    fwrite($handle, $batchtext);
    fclose($handle);
    
-   $command = "sshpass -p \"$pw\" sftp -oBatchMode=no " . ($port==22?'':"-P $port ") . "-b $tmpfname $user@$url";
+   // create temp file for password
+   $tmppass = tempnam("/tmp", "PWX");
+   $handle = fopen($tmppass, "w");
+   fwrite($handle, $pw);
+   fclose($handle);
+   
+   $command = "sshpass -f \"$tmppass\" sftp -oBatchMode=no " . ($port==22?'':"-P $port ") . "-b $tmpfname $user@$url";
+   //$command = "sshpass -p \"$pw\" sftp -oBatchMode=no " . ($port==22?'':"-P $port ") . "-b $tmpfname $user@$url";
    write2log($log, "SFTP command: " . $command);
    
    exec($command .' 2>&1', $result, $return_value);
    
    unlink($tmpfname);
+   unlink($tmppass);
    
    $str_result = implode("\n", $result);
    
