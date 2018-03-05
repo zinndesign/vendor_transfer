@@ -107,7 +107,7 @@ if(count($missing_files)>0) {
     write2log($log, count($transfer_files) . " files for transfer:\n" . print_r($transfer_files, true));
 }
 
-// if we're still running at this point, all files are present, and we can grab FTP info and start transfers
+// if we're still running at this point, all files are present, and we can grab vendor and FTP info and start transfers
 // first, let's get the vendors for this brand
 
 $query = "SELECT vendorName, ftpID, ncID_list, bundled FROM brands b, vendors v, brand2vendor bv WHERE b.brandID = bv.brandID AND v.vendorID =  bv.vendorID AND brandCode = '$code'";
